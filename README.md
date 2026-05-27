@@ -13,9 +13,6 @@ O dispositivo entra na rede Zigbee como uma luz dimerizavel simples, com suporte
 - Saida de dados WS2815 via RMT usando o componente `led_strip`.
 - Estado `on/off` e brilho salvos em NVS.
 - Inicializacao sem brilho aleatorio.
-- Fabricante Zigbee: `NinjinhaDev`.
-- Modelo Zigbee: `ESP32C6_PWM_Dimmer`.
-- Nome amigavel sugerido: `ESP32-C6 Zigbee Dimmer`.
 
 ## Hardware
 
