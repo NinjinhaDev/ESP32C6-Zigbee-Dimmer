@@ -1,0 +1,13 @@
+build/
+managed_components/
+sdkconfig
+sdkconfig.old
+.vscode/
+.clangd
+
+*.pyc
+__pycache__/
+.pytest_cache/
+
+*.log
+*.tmp
