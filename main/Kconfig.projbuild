@@ -1,0 +1,17 @@
+menu "Zigbee Dimmer Configuration"
+
+    config DIMMER_WS2815_DATA_GPIO
+        int "WS2815 Data GPIO"
+        default 4
+        help
+            Configures the GPIO pin used to send data to the WS2815 LED strip.
+            Default is GPIO 4.
+
+    config DIMMER_WS2815_LED_COUNT
+        int "WS2815 LED Count"
+        default 60
+        help
+            Configures the total number of LEDs connected in the WS2815 strip.
+            Default is 60 LEDs.
+
+endmenu

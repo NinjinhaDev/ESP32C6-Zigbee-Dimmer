@@ -2,7 +2,7 @@
  * ESP32-C6 Zigbee WS2815 Dimmer
  *
  * Zigbee HA Dimmable Light endpoint for Zigbee2MQTT/Home Assistant.
- * Drives a 12 V WS2815 addressable LED strip through one data GPIO using RMT.
+ * Drives a 12 V WS2815 addressable LED strip using SPI DMA to support 300 LEDs!
  */
 
 #include <stdbool.h>
@@ -21,7 +21,7 @@
 #include "freertos/task.h"
 #include "ha/esp_zigbee_ha_standard.h"
 #include "led_strip.h"
-#include "led_strip_rmt.h"
+#include "led_strip_spi.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "platform/esp_zigbee_platform.h"
@@ -31,8 +31,8 @@
 
 #define DIMMER_ENDPOINT                 10
 #define WS2815_DATA_GPIO                GPIO_NUM_4
-#define WS2815_LED_COUNT                60
-#define WS2815_RMT_RESOLUTION_HZ        (10 * 1000 * 1000)
+#define WS2815_LED_COUNT                300
+#define BOOT_BUTTON_GPIO                9
 
 #define ZIGBEE_CHANNEL_MASK             ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK
 #define INSTALL_CODE_POLICY_ENABLE      false
@@ -61,6 +61,29 @@ static dimmer_state_t s_state = {
     .level = DIMMER_DEFAULT_LEVEL,
 };
 
+static uint8_t s_current_brightness = 0;
+static TaskHandle_t s_fade_task_handle = NULL;
+
+// Curva Gamma para deixar o fade suave ao olho humano
+static const uint8_t gamma28[256] = {
+    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+    0,   0,   0,   0,   1,   1,   1,   1,   1,   1,   1,   1,   1,   2,   2,
+    2,   2,   2,   2,   2,   3,   3,   3,   3,   3,   4,   4,   4,   4,   4,
+    5,   5,   5,   5,   6,   6,   6,   6,   7,   7,   7,   8,   8,   8,   9,
+    9,   9,   10,  10,  10,  11,  11,  12,  12,  12,  13,  13,  14,  14,  15,
+    15,  16,  16,  17,  17,  18,  18,  19,  19,  20,  20,  21,  21,  22,  23,
+    23,  24,  25,  25,  26,  27,  27,  28,  29,  29,  30,  31,  31,  32,  33,
+    34,  34,  35,  36,  37,  38,  38,  39,  40,  41,  42,  42,  43,  44,  45,
+    46,  47,  48,  49,  50,  51,  52,  53,  54,  55,  56,  57,  58,  59,  60,
+    61,  62,  63,  64,  65,  66,  68,  69,  70,  71,  72,  74,  75,  76,  77,
+    79,  80,  81,  83,  84,  85,  87,  88,  89,  91,  92,  94,  95,  97,  98,
+    100, 101, 103, 104, 106, 107, 109, 111, 112, 114, 116, 117, 119, 121, 122,
+    124, 126, 128, 130, 131, 133, 135, 137, 139, 141, 143, 145, 147, 149, 151,
+    153, 155, 157, 159, 161, 163, 165, 167, 169, 172, 174, 176, 178, 180, 183,
+    185, 187, 190, 192, 194, 197, 199, 202, 204, 207, 209, 212, 214, 217, 219,
+    222, 225, 227, 230, 233, 235, 238, 241, 244, 246, 249, 252, 255};
+
+
 static esp_err_t dimmer_state_load(void)
 {
     nvs_handle_t handle;
@@ -86,6 +109,7 @@ static esp_err_t dimmer_state_load(void)
 
     s_state.on = on != 0;
     s_state.level = level;
+    s_current_brightness = s_state.on ? s_state.level : 0;
     ESP_LOGI(TAG, "Loaded state from NVS: on=%d level=%u", s_state.on, s_state.level);
     return ESP_OK;
 }
@@ -105,19 +129,59 @@ static void dimmer_state_save(void)
     nvs_close(handle);
 }
 
-static esp_err_t ws2815_apply_state(void)
-{
-    if (s_strip == NULL) {
-        return ESP_ERR_INVALID_STATE;
-    }
+// Tarefa que controla o Brilho e a Cor da Fita (Roda em Backgroud)
+static void fade_task(void *arg) {
+    bool is_fading = false;
 
-    const uint8_t value = s_state.on ? s_state.level : 0;
-    for (uint32_t i = 0; i < WS2815_LED_COUNT; i++) {
-        ESP_RETURN_ON_ERROR(led_strip_set_pixel(s_strip, i, value, value, value), TAG, "Failed to set LED pixel");
+    while (1) {
+        uint8_t target = s_state.on ? s_state.level : 0;
+
+        if (s_current_brightness != target) {
+            
+            // Ativa o fade suave se estava desligada
+            if (!is_fading && (s_current_brightness <= 20 || target == 0)) {
+                is_fading = true;
+            }
+
+            if (is_fading) {
+                if (s_current_brightness < target) s_current_brightness++;
+                else s_current_brightness--;
+            } else {
+                // Troca rápida para ajustes de brilho
+                s_current_brightness = target;
+            }
+
+            uint8_t gamma_val = gamma28[s_current_brightness];
+
+            // Limitador de energia (85% para proteger a fonte)
+            gamma_val = (gamma_val * 216) / 255;
+
+            // Cor Âmbar: R:255, G:222, B:33
+            uint32_t temp_r = (gamma_val * 255) / 255;
+            uint32_t temp_g = (gamma_val * 222) / 255;
+            uint32_t temp_b = (gamma_val * 33) / 255;
+            
+            uint8_t final_r = (uint8_t)temp_r;
+            uint8_t final_g = (uint8_t)temp_g;
+            uint8_t final_b = (uint8_t)temp_b;
+
+            for (uint32_t i = 0; i < WS2815_LED_COUNT; i++) {
+                led_strip_set_pixel(s_strip, i, final_r, final_g, final_b);
+            }
+            led_strip_refresh(s_strip);
+
+            if (is_fading) {
+                vTaskDelay(pdMS_TO_TICKS(10) > 0 ? pdMS_TO_TICKS(10) : 1);
+            }
+
+            if (s_current_brightness == target) {
+                is_fading = false;
+            }
+        } else {
+            is_fading = false;
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        }
     }
-    ESP_RETURN_ON_ERROR(led_strip_refresh(s_strip), TAG, "Failed to refresh LED strip");
-    ESP_LOGI(TAG, "Applied strip state: on=%d level=%u rgb=%u", s_state.on, s_state.level, value);
-    return ESP_OK;
 }
 
 static esp_err_t ws2815_init(void)
@@ -136,18 +200,16 @@ static esp_err_t ws2815_init(void)
         },
     };
 
-    led_strip_rmt_config_t rmt_config = {
-        .clk_src = RMT_CLK_SRC_DEFAULT,
-        .resolution_hz = WS2815_RMT_RESOLUTION_HZ,
-        .mem_block_symbols = 0,
+    // A MÁGICA: Usar SPI com DMA ativado (Resolve o problema de travar fita de 300 LEDs no ESP32-C6)
+    led_strip_spi_config_t spi_config = {
+        .spi_bus = SPI2_HOST,
         .flags = {
-            .with_dma = false,
+            .with_dma = true, 
         },
     };
 
-    ESP_RETURN_ON_ERROR(led_strip_new_rmt_device(&strip_config, &rmt_config, &s_strip), TAG, "Failed to create LED strip");
-    ESP_RETURN_ON_ERROR(ws2815_apply_state(), TAG, "Failed to apply initial state");
-    ESP_LOGI(TAG, "WS2815 configured on GPIO%d, leds=%d", WS2815_DATA_GPIO, WS2815_LED_COUNT);
+    ESP_RETURN_ON_ERROR(led_strip_new_spi_device(&strip_config, &spi_config, &s_strip), TAG, "Failed to create LED strip");
+    ESP_LOGI(TAG, "WS2815 configured on GPIO%d, leds=%d with SPI DMA", WS2815_DATA_GPIO, WS2815_LED_COUNT);
     return ESP_OK;
 }
 
@@ -169,8 +231,11 @@ static void dimmer_set_on(bool on, bool update_zigbee)
     }
 
     s_state.on = on;
-    ESP_ERROR_CHECK_WITHOUT_ABORT(ws2815_apply_state());
     dimmer_state_save();
+    
+    if (s_fade_task_handle) {
+        xTaskNotifyGive(s_fade_task_handle);
+    }
 
     if (update_zigbee) {
         zigbee_update_attribute(ESP_ZB_ZCL_CLUSTER_ID_ON_OFF, ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID, &s_state.on);
@@ -184,8 +249,11 @@ static void dimmer_set_level(uint8_t level, bool update_zigbee)
     }
 
     s_state.level = level;
-    ESP_ERROR_CHECK_WITHOUT_ABORT(ws2815_apply_state());
     dimmer_state_save();
+    
+    if (s_fade_task_handle) {
+        xTaskNotifyGive(s_fade_task_handle);
+    }
 
     if (update_zigbee) {
         zigbee_update_attribute(ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL,
@@ -347,6 +415,50 @@ static void zigbee_task(void *pvParameters)
     esp_zb_stack_main_loop();
 }
 
+// Tarefa do Botão Físico (Factory Reset e Controle Local)
+static void button_task(void *arg) {
+    gpio_reset_pin(BOOT_BUTTON_GPIO);
+    gpio_set_direction(BOOT_BUTTON_GPIO, GPIO_MODE_INPUT);
+    gpio_pullup_en(BOOT_BUTTON_GPIO);
+
+    while (1) {
+        if (gpio_get_level(BOOT_BUTTON_GPIO) == 0) {
+            vTaskDelay(pdMS_TO_TICKS(50)); // Debounce
+            if (gpio_get_level(BOOT_BUTTON_GPIO) == 0) {
+                uint32_t press_time = 0;
+                bool factory_reset = false;
+
+                while (gpio_get_level(BOOT_BUTTON_GPIO) == 0) {
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    press_time += 100;
+                    if (press_time >= 3000) {
+                        ESP_LOGW(TAG, "Factory Reset acionado pelo botao fisico!");
+                        
+                        nvs_flash_erase();
+                        nvs_flash_init();
+                        
+                        esp_zb_factory_reset();
+                        
+                        while (gpio_get_level(BOOT_BUTTON_GPIO) == 0) {
+                            vTaskDelay(pdMS_TO_TICKS(100));
+                        }
+                        vTaskDelay(pdMS_TO_TICKS(1000));
+                        esp_restart();
+                        factory_reset = true;
+                        break;
+                    }
+                }
+
+                if (!factory_reset) {
+                    ESP_LOGI(TAG, "Botao fisico pressionado - Alternando a luz");
+                    dimmer_set_on(!s_state.on, true);
+                }
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
 void app_main(void)
 {
     esp_err_t err = nvs_flash_init();
@@ -358,6 +470,17 @@ void app_main(void)
 
     ESP_ERROR_CHECK(dimmer_state_load());
     ESP_ERROR_CHECK(ws2815_init());
+
+    // Inicia a tarefa responsável pelo fade suave em segundo plano
+    xTaskCreate(fade_task, "fade_task", 4096, NULL, 4, &s_fade_task_handle);
+
+    // Inicia a tarefa do Botão Físico
+    xTaskCreate(button_task, "button_task", 4096, NULL, 4, NULL);
+
+    // Como é o boot inicial, pede para a task aplicar a cor instantaneamente
+    if (s_fade_task_handle) {
+        xTaskNotifyGive(s_fade_task_handle);
+    }
 
     ESP_LOGI(TAG, "Starting ESP32-C6 Zigbee dimmer, manufacturer=NinjinhaDev model=ESP32C6_PWM_Dimmer");
     xTaskCreate(zigbee_task, "zigbee_main", 8192, NULL, 5, NULL);
