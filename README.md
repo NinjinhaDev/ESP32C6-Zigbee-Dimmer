@@ -1,68 +1,111 @@
 # ESP32-C6 Zigbee WS2815 Dimmer
 
-Firmware ESP-IDF para usar um ESP32-C6 como dimmer Zigbee inteligente para fita WS2815 12 V.
+Firmware ESP-IDF para transformar um ESP32-C6 em um dimmer Zigbee para fita LED endereçável WS2815 12 V.
 
-O dispositivo entra na rede Zigbee como uma luz dimerizável simples, com suporte a `on/off` e `brightness`, perfeitamente compatível com Zigbee2MQTT, Home Assistant e Alexa.
+O dispositivo entra na rede como uma luz dimerizável Zigbee, com suporte a `on/off` e `brightness`, compatível com Zigbee2MQTT, Home Assistant, ZHA e integrações que reconhecem o perfil Zigbee Home Automation.
 
-## Novos Recursos Avançados (v2.0)
+## Status
 
-- **Fade Suave Cinematográfico:** Transições suaves ao ligar/desligar com proteção contra saltos bruscos enviados por hubs (Home Assistant/Tuya).
-- **Cor Âmbar Fixa:** A fita acende com a cor pré-definida `RGB(255, 222, 33)` injetada diretamente no sinal RMT, mantendo a simplicidade de controle de um dimmer branco comum no app.
-- **Proteção de Memória (NVS Debounce):** O estado só é salvo fisicamente na memória flash 3 segundos após a última alteração do usuário, evitando o desgaste prematuro da NVS.
-- **Limitador de Potência:** Para proteger fontes subdimensionadas, o firmware impõe um teto absoluto de 85% do brilho máximo.
-- **Correção Gamma 2.8:** O mapa de brilho é filtrado matematicamente para que o comportamento do LED se alinhe à percepção logarítmica do olho humano.
-- **Reset de Fábrica Seguro:** Segurar o botão físico (GPIO 9) por 3 segundos aciona a formatação da NVS e do Zigbee, com trava de segurança para evitar que a placa entre em "Download Mode" acidentalmente.
-- **Menuconfig Nativo:** Configurável facilmente pelas ferramentas de build da Espressif sem precisar alterar código.
+- Versão atual: v2.0
+- Placa alvo: ESP32-C6
+- Fita alvo: WS2815 12 V
+- Controle Zigbee: endpoint de luz dimerizável
+- Saída LED: SPI DMA via componente `led_strip`
+- Cor fixa da fita: âmbar `RGB(255, 222, 33)`
+
+## Recursos
+
+- Fade suave ao ligar e desligar.
+- Ajuste rápido de brilho quando a fita já está acesa.
+- Correção gamma 2.8 para resposta visual mais natural.
+- Limitador de potência em 85% do brilho máximo.
+- Estado salvo em NVS com debounce de 3 segundos para reduzir gravações na flash.
+- Botão físico no GPIO 9 para alternar liga/desliga.
+- Reset de fábrica segurando o botão por 3 segundos.
+- Configuração de GPIO e quantidade de LEDs via `idf.py menuconfig`.
 
 ## Hardware
 
-Este projeto foi feito para fita **WS2815 12 V** com fonte externa.
+Este projeto foi feito para fita **WS2815 12 V** com fonte externa. O ESP32-C6 não alimenta a fita; ele apenas envia o sinal de dados e compartilha o GND com a fonte.
 
 Ligação básica:
 
 ```text
-Fonte 12 V +  -> +12V da fita
-Fonte 12 V -  -> GND da fita
-Fonte 12 V -  -> GND do ESP32-C6
-GPIO4 ESP32-C6 -> resistor 330-470 ohms -> DIN da fita
-Botão Tátil    -> Entre GPIO 9 e GND
+Fonte 12 V +       -> +12V da fita
+Fonte 12 V -       -> GND da fita
+Fonte 12 V -       -> GND do ESP32-C6
+GPIO4 ESP32-C6     -> resistor 330-470 ohms -> DIN da fita
+Botão físico       -> entre GPIO 9 e GND
 ```
 
 Recomendado:
-- Capacitor de 1000 uF ou maior entre `+12V` e `GND` perto da fita.
-- Level shifter 3.3 V para 5 V no sinal de dados.
-- Cabo curto entre ESP32-C6 e entrada de dados da fita.
 
-> Nunca ligue 12 V em nenhum pino do ESP32-C6! O ESP apenas envia o sinal de dados de 3.3V e compartilha o GND com a fonte da fita.
+- Capacitor de 1000 uF ou maior entre `+12V` e `GND` perto da fita.
+- Level shifter 3.3 V para 5 V no sinal de dados, principalmente com cabo longo.
+- Cabo curto entre o ESP32-C6 e a entrada de dados da fita.
+- Fonte dimensionada para a quantidade real de LEDs instalada.
+
+> Nunca ligue 12 V em nenhum pino do ESP32-C6.
 
 ## Configuração
 
-Você não precisa mais alterar código fonte para ajustar o pino ou a quantidade de LEDs.
-Utilize o menu do ESP-IDF:
+Os padrões atuais são:
+
+| Opção | Padrão |
+| --- | --- |
+| GPIO de dados WS2815 | GPIO 4 |
+| Quantidade de LEDs | 300 |
+| Botão físico | GPIO 9 |
+| Fabricante Zigbee | `NinjinhaDev` |
+| Modelo Zigbee | `ESP32C6_PWM_Dimmer` |
+
+Para alterar o pino de dados ou a quantidade de LEDs:
 
 ```bash
 idf.py menuconfig
 ```
-Navegue até **"Zigbee Dimmer Configuration"** e altere:
-- O pino de dados do LED (Padrão: GPIO 4)
-- A quantidade de LEDs da fita (Padrão: 300)
+
+Depois navegue até:
+
+```text
+Zigbee Dimmer Configuration
+```
+
+## Estrutura do projeto
+
+```text
+.
++-- CMakeLists.txt
++-- partitions.csv
++-- sdkconfig.defaults
++-- dependencies.lock
++-- main/
+|   +-- CMakeLists.txt
+|   +-- Kconfig.projbuild
+|   +-- idf_component.yml
+|   +-- main.c
++-- README.md
+```
+
+Arquivos gerados localmente, como `build/`, `managed_components/`, `sdkconfig` e configurações de editor, ficam fora do Git pelo `.gitignore`.
 
 ## Requisitos
 
-- ESP-IDF v6.0.1.
+- ESP-IDF 6.0.x.
 - Target `esp32c6`.
 - Python e toolchain instalados pelo ESP-IDF.
 
-Os componentes externos são declarados em `main/idf_component.yml`:
+Componentes externos declarados em `main/idf_component.yml`:
+
 - `espressif/esp-zigbee-lib`
 - `espressif/esp-zboss-lib`
 - `espressif/led_strip`
 
-Ao compilar, o ESP-IDF baixa os componentes automaticamente.
+O ESP-IDF baixa os componentes automaticamente durante o build.
 
-## Build e Flash
+## Build e flash
 
-No terminal ESP-IDF:
+No terminal com o ambiente ESP-IDF carregado:
 
 ```bash
 idf.py set-target esp32c6
@@ -70,20 +113,30 @@ idf.py build
 idf.py -p COMx flash monitor
 ```
 
-Se a tabela de partições mudar, ou se estiver vindo de outro projeto diferente, use:
+Troque `COMx` pela porta serial da placa.
+
+Se estiver migrando de outro firmware, se mudou partições ou se quiser limpar pareamento anterior:
 
 ```bash
 idf.py -p COMx erase-flash flash monitor
 ```
 
-## Pareamento Zigbee (Home Assistant / Z2M)
+## Pareamento Zigbee
 
-1. Ative o modo "Permit Join" no seu Hub (Zigbee2MQTT, ZHA, SmartLife).
-2. Se o dispositivo já estiver na rede e você quiser reparear: **Segure o botão físico (GPIO 9) por 3 segundos**, solte e aguarde a placa reiniciar.
-3. O dispositivo irá piscar buscando pareamento.
+1. Ative `Permit Join` no Zigbee2MQTT, ZHA ou hub compatível.
+2. Ligue o ESP32-C6 com o firmware gravado.
+3. Aguarde o dispositivo entrar na rede Zigbee.
 
-Ele deve aparecer na rede como:
+Para remover o pareamento e voltar ao estado de fábrica, segure o botão físico no GPIO 9 por 3 segundos. O firmware apaga NVS/Zigbee e reinicia o processo de pareamento.
+
+O dispositivo deve aparecer como:
+
 - Fabricante: `NinjinhaDev`
 - Modelo: `ESP32C6_PWM_Dimmer`
 
-Aproveite o seu Dimmer inteligente super otimizado!
+## Notas de operação
+
+- O firmware usa uma luz Zigbee dimerizável simples. A cor âmbar é fixa no firmware, então o app controla apenas liga/desliga e brilho.
+- O brilho salvo em NVS é restaurado ao reiniciar.
+- A gravação em NVS é atrasada em 3 segundos após mudanças de estado para evitar desgaste por comandos repetidos.
+- O limite de 85% ajuda a proteger fontes menores, mas não substitui uma fonte corretamente dimensionada.

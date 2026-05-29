@@ -19,24 +19,27 @@
 #include "esp_zigbee_endpoint.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/timers.h"
 #include "ha/esp_zigbee_ha_standard.h"
 #include "led_strip.h"
 #include "led_strip_spi.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "platform/esp_zigbee_platform.h"
+#include "sdkconfig.h"
 #include "zcl/esp_zigbee_zcl_basic.h"
 #include "zcl/esp_zigbee_zcl_level.h"
 #include "zcl/esp_zigbee_zcl_on_off.h"
 
 #define DIMMER_ENDPOINT                 10
-#define WS2815_DATA_GPIO                GPIO_NUM_4
-#define WS2815_LED_COUNT                300
+#define WS2815_DATA_GPIO                ((gpio_num_t)CONFIG_DIMMER_WS2815_DATA_GPIO)
+#define WS2815_LED_COUNT                CONFIG_DIMMER_WS2815_LED_COUNT
 #define BOOT_BUTTON_GPIO                9
 
 #define ZIGBEE_CHANNEL_MASK             ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK
 #define INSTALL_CODE_POLICY_ENABLE      false
 #define MAX_ROUTER_CHILDREN             10
+#define NVS_SAVE_DEBOUNCE_MS            3000
 
 #define NVS_DIMMER_NAMESPACE            "dimmer"
 #define NVS_KEY_ON                      "on"
@@ -63,6 +66,7 @@ static dimmer_state_t s_state = {
 
 static uint8_t s_current_brightness = 0;
 static TaskHandle_t s_fade_task_handle = NULL;
+static TimerHandle_t s_nvs_save_timer = NULL;
 
 // Curva Gamma para deixar o fade suave ao olho humano
 static const uint8_t gamma28[256] = {
@@ -127,6 +131,25 @@ static void dimmer_state_save(void)
     ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_set_u8(handle, NVS_KEY_LEVEL, s_state.level));
     ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_commit(handle));
     nvs_close(handle);
+}
+
+static void dimmer_state_save_timer_cb(TimerHandle_t timer)
+{
+    (void)timer;
+    dimmer_state_save();
+}
+
+static void dimmer_state_schedule_save(void)
+{
+    if (s_nvs_save_timer == NULL) {
+        dimmer_state_save();
+        return;
+    }
+
+    if (xTimerReset(s_nvs_save_timer, pdMS_TO_TICKS(100)) != pdPASS) {
+        ESP_LOGW(TAG, "Failed to reset NVS save timer, saving immediately");
+        dimmer_state_save();
+    }
 }
 
 // Tarefa que controla o Brilho e a Cor da Fita (Roda em Backgroud)
@@ -231,7 +254,7 @@ static void dimmer_set_on(bool on, bool update_zigbee)
     }
 
     s_state.on = on;
-    dimmer_state_save();
+    dimmer_state_schedule_save();
     
     if (s_fade_task_handle) {
         xTaskNotifyGive(s_fade_task_handle);
@@ -249,7 +272,7 @@ static void dimmer_set_level(uint8_t level, bool update_zigbee)
     }
 
     s_state.level = level;
-    dimmer_state_save();
+    dimmer_state_schedule_save();
     
     if (s_fade_task_handle) {
         xTaskNotifyGive(s_fade_task_handle);
@@ -469,6 +492,14 @@ void app_main(void)
     ESP_ERROR_CHECK(err);
 
     ESP_ERROR_CHECK(dimmer_state_load());
+    s_nvs_save_timer = xTimerCreate("nvs_save",
+                                    pdMS_TO_TICKS(NVS_SAVE_DEBOUNCE_MS),
+                                    pdFALSE,
+                                    NULL,
+                                    dimmer_state_save_timer_cb);
+    if (s_nvs_save_timer == NULL) {
+        ESP_LOGW(TAG, "NVS save debounce timer unavailable, state will be saved immediately");
+    }
     ESP_ERROR_CHECK(ws2815_init());
 
     // Inicia a tarefa responsável pelo fade suave em segundo plano

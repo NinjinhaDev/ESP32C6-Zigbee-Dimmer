@@ -9,9 +9,9 @@ menu "Zigbee Dimmer Configuration"
 
     config DIMMER_WS2815_LED_COUNT
         int "WS2815 LED Count"
-        default 60
+        default 300
         help
             Configures the total number of LEDs connected in the WS2815 strip.
-            Default is 60 LEDs.
+            Default is 300 LEDs.
 
 endmenu
